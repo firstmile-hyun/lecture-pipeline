@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>강의 파이프라인</title>
+<style>
+  :root {
+    --bg: #14181f; --panel: #1c222c; --panel2: #232b37; --line: #2e3844;
+    --text: #e8ecf1; --dim: #93a1b3; --accent: #4f8ef7; --accent2: #3272de;
+    --ok: #3ecf8e; --warn: #f5b04d; --err: #f2635f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); height: 100vh; overflow: hidden;
+    font: 14px/1.55 -apple-system, "Apple SD Gothic Neo", sans-serif;
+    display: flex; flex-direction: column; user-select: none;
+  }
+  header {
+    padding: 14px 22px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 { font-size: 17px; font-weight: 700; }
+  header span { color: var(--dim); font-size: 12px; }
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- 왼쪽: 에피소드 ---------- */
+  #sidebar {
+    width: 300px; border-right: 1px solid var(--line); padding: 16px;
+    display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h2 { font-size: 12px; color: var(--dim); font-weight: 600; margin-bottom: 10px; letter-spacing: .04em; }
+  .filerow {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    background: var(--panel2); border-radius: 8px; padding: 7px 10px; cursor: pointer;
+    border: 1px dashed var(--line); font-size: 13px; color: var(--dim);
+    overflow: hidden; white-space: nowrap;
+  }
+  .filerow.set { border-style: solid; color: var(--text); }
+  .filerow .name { overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+  input[type=text] {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); padding: 7px 10px; font-size: 13px; margin-bottom: 8px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--accent); }
+  button {
+    background: var(--accent); border: 0; color: #fff; border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: var(--accent2); }
+  button:disabled { background: var(--panel2); color: var(--dim); cursor: default; }
+  button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  button.ghost:hover { border-color: var(--dim); }
+  button.danger { background: var(--err); }
+  .ep {
+    padding: 10px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .ep:hover { background: var(--panel2); }
+  .ep.active { background: var(--panel2); border-color: var(--accent); }
+  .ep .nm { font-weight: 600; }
+  .dots { display: flex; gap: 4px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .dot.on { background: var(--ok); }
+
+  /* ---------- 오른쪽: 상세 ---------- */
+  #detail { flex: 1; padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  #empty { color: var(--dim); margin: auto; text-align: center; }
+  .steps { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line);
+  }
+  .chip.done { color: var(--ok); border-color: var(--ok); }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar .spacer { flex: 1; }
+  label.toggle { color: var(--dim); font-size: 12px; display: flex; gap: 5px; align-items: center; cursor: pointer; }
+  #log {
+    flex: 1; background: #0d1116; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; overflow-y: auto; font: 12px/1.7 "SF Mono", Menlo, monospace;
+    color: #b7c2cf; white-space: pre-wrap; user-select: text; min-height: 110px;
+  }
+  #log .prog { color: var(--accent); }
+  #log .err { color: var(--err); }
+  #log .okline { color: var(--ok); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; user-select: text; }
+  th, td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  tr.review td { color: var(--warn); }
+  tr.backward td:last-child { color: var(--accent); }
+  #matchwrap { max-height: 200px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  /* ID 선택자(#modal 등)의 display 지정보다 항상 우선해야 함 */
+  .hidden { display: none !important; }
+
+  /* 미리보기 모달 */
+  #modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.72); display: flex;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  #modal img { max-width: 88vw; max-height: 82vh; border-radius: 10px; box-shadow: 0 18px 60px rgba(0,0,0,.6); }
+  #modal .close { position: absolute; top: 22px; right: 30px; font-size: 26px; color: #fff; cursor: pointer; }
+  #toast {
+    position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 10px 18px; font-size: 13px; z-index: 20;
+    box-shadow: 0 8px 30px rgba(0,0,0,.4); transition: opacity .3s; opacity: 0; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>강의 영상 리디자인 파이프라인</h1>
+  <span>영상 + PDF → 프리미어 시퀀스 XML</span>
+</header>
+<main>
+  <div id="sidebar">
+    <div class="card">
+      <h2>새 에피소드</h2>
+      <div class="filerow" id="pickVideo"><span>🎬</span><span class="name">원본 영상 선택…</span></div>
+      <div class="filerow" id="pickPdf"><span>📄</span><span class="name">강의자료 PDF 선택…</span></div>
+      <input type="text" id="epName" placeholder="에피소드 이름 (예: ep01)">
+      <button id="createEp" style="width:100%">에피소드 만들기</button>
+    </div>
+    <div class="card" style="flex:1">
+      <h2>에피소드</h2>
+      <div id="epList"></div>
+    </div>
+  </div>
+
+  <div id="detail">
+    <div id="empty">왼쪽에서 에피소드를 선택하거나 새로 만들어 주세요.<br><br>
+      감지 → 추출 → 매칭 → 누끼 → XML 생성까지 자동으로 진행됩니다.</div>
+
+    <div id="panel" class="hidden" style="display:flex;flex-direction:column;gap:14px;flex:1;min-height:0">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:16px;font-weight:700" id="epTitle"></div>
+        <div class="steps" id="stepChips"></div>
+      </div>
+
+      <div class="toolbar">
+        <button id="runAll">▶ 전체 실행</button>
+        <button id="runSample" class="ghost">30초 샘플 누끼</button>
+        <button id="runXml" class="ghost">XML만 다시 생성</button>
+        <label class="toggle"><input type="checkbox" id="force"> 강제 재실행</label>
+        <button id="cancel" class="danger hidden">■ 중단</button>
+        <div class="spacer"></div>
+        <button id="previewBtn" class="ghost">미리보기</button>
+        <button id="revealBtn" class="ghost">Finder</button>
+        <button id="exportBtn">XML 내보내기…</button>
+      </div>
+
+      <div id="log">앱이 준비됐어요. 실행 버튼을 누르면 여기에 진행 로그가 표시됩니다.</div>
+
+      <div id="matchwrap" class="hidden">
+        <table>
+          <thead><tr><th>씬</th><th>시작 TC</th><th>슬라이드</th><th>신뢰도</th><th>플래그</th></tr></thead>
+          <tbody id="matchBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="modal" class="hidden"><span class="close">✕</span><img id="modalImg"></div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = { video: null, pdf: null, current: null, running: false, episodes: [] };
+
+function toast(msg, ms = 2600) {
+  const t = $("#toast"); t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.opacity = 0, ms);
+}
+function api() { return window.pywebview.api; }
+
+/* ---------------- 로그 ---------------- */
+let progEl = null;
+function appendLog(text, cls) {
+  const log = $("#log");
+  const el = document.createElement("div");
+  if (cls) el.className = cls;
+  el.textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+window.pipelineEvent = ev => {
+  const { kind, data } = ev;
+  if (kind === "log") {
+    progEl = null;
+    const cls = /Traceback|Error|실패|오류/.test(data) ? "err" : (/완료 →|통과/.test(data) ? "okline" : "");
+    appendLog(data, cls);
+  } else if (kind === "progress") {
+    if (!progEl) progEl = appendLog(data, "prog");
+    else { progEl.textContent = data; $("#log").scrollTop = $("#log").scrollHeight; }
+  } else if (kind === "done") {
+    progEl = null;
+    state.running = false;
+    appendLog(data.code === 0 ? "✓ 작업 완료" : `✗ 종료 코드 ${data.code}`, data.code === 0 ? "okline" : "err");
+    updateRunButtons();
+    refreshEpisodes().then(() => state.current && selectEpisode(state.current, true));
+  }
+};
+
+/* ---------------- 에피소드 목록 ---------------- */
+const STEPS = [["detect","감지"],["slides","추출"],["match","매칭"],["matte","누끼"],["xml","XML"]];
+
+async function refreshEpisodes() {
+  state.episodes = await api().list_episodes();
+  const list = $("#epList"); list.innerHTML = "";
+  for (const ep of state.episodes) {
+    const div = document.createElement("div");
+    div.className = "ep" + (ep.name === state.current ? " active" : "");
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = ep.name;  // Finder에서 만든 임의 폴더명 주입 방지
+    const dots = document.createElement("span");
+    dots.className = "dots";
+    dots.innerHTML = STEPS.map(([k]) => `<span class="dot ${ep.status[k] ? "on" : ""}"></span>`).join("");
+    div.append(nm, dots);
+    div.onclick = () => {
+      if (state.running) return toast("실행 중에는 에피소드를 전환할 수 없어요");
+      selectEpisode(ep.name);
+    };
+    list.appendChild(div);
+  }
+  if (!state.episodes.length) list.innerHTML = '<div style="color:var(--dim);font-size:12px">아직 없어요</div>';
+}
+
+async function selectEpisode(name, keepLog) {
+  state.current = name;
+  $("#empty").classList.add("hidden");
+  $("#panel").classList.remove("hidden");
+  $("#epTitle").textContent = name;
+  if (!keepLog) { $("#log").innerHTML = ""; appendLog(`— ${name} 선택됨 —`); progEl = null; }
+  document.querySelectorAll(".ep").forEach(e =>
+    e.classList.toggle("active", e.querySelector(".nm").textContent === name));
+  const ep = state.episodes.find(e => e.name === name);
+  const chips = $("#stepChips"); chips.innerHTML = "";
+  for (const [k, label] of STEPS) {
+    const c = document.createElement("span");
+    c.className = "chip" + (ep?.status[k] ? " done" : "");
+    c.textContent = (ep?.status[k] ? "✓ " : "") + label;
+    chips.appendChild(c);
+  }
+  const rows = await api().match_rows(name);
+  $("#matchwrap").classList.toggle("hidden", !rows.length);
+  const tb = $("#matchBody"); tb.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const flag = r.flag || "";
+    if (flag.includes("review")) tr.className = "review";
+    else if (flag.includes("backward")) tr.className = "backward";
+    for (const v of [r.scene, r.start_tc, `p.${r.matched_page}`, r.confidence, r.flag || "—"]) {
+      const td = document.createElement("td");
+      td.textContent = v;
+      tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
+  updateRunButtons();
+}
+
+function updateRunButtons() {
+  for (const id of ["runAll", "runSample", "runXml", "exportBtn", "previewBtn"])
+    $("#" + id).disabled = state.running;
+  $("#cancel").classList.toggle("hidden", !state.running);
+}
+
+/* ---------------- 실행 ---------------- */
+async function run(step, sampleSec) {
+  if (!state.current || state.running) return;
+  const r = await api().run_pipeline(state.current, step, $("#force").checked, sampleSec);
+  if (r.error) return toast(r.error);
+  state.running = true; progEl = null;
+  appendLog(`▶ 실행: ${step || "전체"}${$("#force").checked ? " (강제)" : ""}`);
+  updateRunButtons();
+}
+$("#runAll").onclick = () => run(null, null);
+$("#runSample").onclick = () => run("matte", 30);
+$("#runXml").onclick = () => run("xml", null);
+$("#cancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
+
+/* ---------------- 새 에피소드 ---------------- */
+$("#pickVideo").onclick = async () => {
+  const p = await api().pick_video();
+  if (!p) return;
+  state.video = p;
+  $("#pickVideo").classList.add("set");
+  $("#pickVideo .name").textContent = p;
+  const base = p.split("/").pop().replace(/\.[^.]+$/, "").replace(/[^\w가-힣.-]+/g, "-");
+  if (!$("#epName").value) $("#epName").value = base;
+};
+$("#pickPdf").onclick = async () => {
+  const p = await api().pick_pdf();
+  if (!p) return;
+  state.pdf = p;
+  $("#pickPdf").classList.add("set");
+  $("#pickPdf .name").textContent = p;
+};
+$("#createEp").onclick = async () => {
+  if (!state.video || !state.pdf) return toast("영상과 PDF를 먼저 선택해 주세요");
+  const name = $("#epName").value.trim();
+  if (!name) return toast("에피소드 이름을 입력해 주세요");
+  const r = await api().create_episode(name, state.video, state.pdf);
+  if (r.error) return toast(r.error, 4200);
+  state.video = state.pdf = null;
+  $("#epName").value = "";
+  for (const id of ["pickVideo", "pickPdf"]) {
+    $("#" + id).classList.remove("set");
+    $(`#${id} .name`).textContent = id === "pickVideo" ? "원본 영상 선택…" : "강의자료 PDF 선택…";
+  }
+  await refreshEpisodes();
+  selectEpisode(r.name);
+  toast(r.note ? `${r.name}: ${r.note}` : `${r.name} 생성됨 — ▶ 전체 실행을 눌러 시작하세요`, 4200);
+};
+
+/* ---------------- 결과 ---------------- */
+$("#exportBtn").onclick = async () => {
+  if (!state.current) return;
+  const r = await api().export_xml(state.current);
+  if (r.error) return toast(r.error, 4000);
+  if (r.cancelled) return;
+  toast(`저장 완료: ${r.path}`, 4200);
+};
+let previewBusy = false;
+$("#previewBtn").onclick = async () => {
+  if (!state.current || previewBusy) return;
+  previewBusy = true;
+  toast("미리보기 합성 중…");
+  try {
+    const r = await api().preview(state.current, 15);
+    if (r.error) return toast("미리보기 실패: " + r.error, 4500);
+    $("#modalImg").src = "data:image/png;base64," + r.image;
+    $("#modal").classList.remove("hidden");
+  } finally { previewBusy = false; }
+};
+$("#revealBtn").onclick = () => state.current && api().reveal(state.current, "output");
+$("#modal").onclick = () => $("#modal").classList.add("hidden");
+
+/* ---------------- 초기화 ---------------- */
+window.addEventListener("unhandledrejection", e => {
+  toast("내부 오류: " + (e.reason?.message || e.reason), 5000);
+});
+window.addEventListener("pywebviewready", async () => {
+  await refreshEpisodes();
+  const first = state.episodes.find(e => e.name !== "sample") || state.episodes[0];
+  if (first) selectEpisode(first.name);
+});
+</script>
+</body>
+</html>

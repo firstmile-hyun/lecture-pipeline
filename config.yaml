@@ -1,0 +1,49 @@
+# 강의 영상 리디자인 파이프라인 — 공통 설정
+# 편별 오버라이드: episodes/epNN/config.yaml 이 있으면 이 파일 위에 deep-merge 된다.
+
+canvas:
+  width: 1920
+  height: 1080
+
+detect:                      # Phase 1 — 슬라이드 전환 감지
+  # 슬라이드 전환은 흰 배경 위 텍스트 변화라 델타가 작다 (실측: 전환 7~11, 정적 구간 최대 0.44).
+  # 스펙 초안의 20은 텍스트 위주 전환을 놓침 → 4로 하향. 오탐 시 편별 오버라이드로 상향.
+  threshold: 4
+  min_scene_sec: 3
+  analyze_width: 0.65        # 왼쪽부터 이 비율만 분석 (강연자 제외).
+                             # 강연자 몸이 화면 x=0.60w 안쪽까지 들어오는 편이면 0.60 이하로 조정
+                             # (분석 영역에 강연자가 걸리면 움직임이 전환으로 오탐될 수 있음)
+  speaker_side: right        # 강연자가 있는 쪽 (right | left)
+  rep_frame_offset_sec: 1.0  # 대표 프레임: 전환 후 이 시점
+
+slides:                      # Phase 2 — 강의자료 PNG 추출
+  min_width: 1600            # 렌더링 최소 폭 (px)
+
+match:                       # Phase 3 — 대표 프레임 ↔ 슬라이드 매칭
+  hash_size: 16              # phash 해상도 (16 → 256bit)
+  review_confidence: 0.80    # 이보다 낮으면 flag=review
+  backward_margin: 0.06      # 역행 매칭 허용 기준: 단조 매칭보다 이만큼 가까울 때만
+
+matte:                       # Phase 4 — 강연자 누끼 (RVM)
+  crop_frac: 0.45            # 강연자 쪽에서 이 비율만큼 크롭해 매팅 (속도/품질)
+  downsample_ratio: 0.375    # RVM 내부 다운샘플 (1080p 크롭 기준 권장값)
+  model: mobilenetv3         # mobilenetv3 | resnet50
+
+layout:
+  slide_frame:               # 슬라이드가 들어갈 프레임 내부 영역 (px, 캔버스 기준)
+    x: 106
+    y: 162
+    width: 1170
+    height: 713
+  speaker:                   # 강연자 알파 영상 배치
+    anchor: bottom-right     # bottom-right | bottom-left | top-right | top-left | center
+    x: 1560                  # 앵커 기준점 (px, 캔버스 기준)
+    y: 1080
+    scale: 0.62              # 클립(크롭된 알파 영상) 원본 대비 배율
+  badge:                     # Phase 6 챕터 배지 (chapters.csv 있을 때만)
+    anchor: top-left
+    x: 106
+    y: 60
+    scale: 1.0
+  intro_sec: 5
+  outro_sec: 5

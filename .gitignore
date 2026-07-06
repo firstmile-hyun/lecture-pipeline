@@ -1,0 +1,13 @@
+# 로컬 환경
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+app/settings.json
+
+# 에피소드 데이터는 로컬 전용 (원본 영상/PDF/산출물)
+episodes/*
+!episodes/.gitkeep
+
+# 매팅 중단 잔여물
+*.part.mov
