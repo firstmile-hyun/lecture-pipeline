@@ -1,9 +1,11 @@
 # 강의 영상 리디자인 파이프라인 — 공통 설정
 # 편별 오버라이드: episodes/epNN/config.yaml 이 있으면 이 파일 위에 deep-merge 된다.
 
-canvas:
+canvas:                      # 설계 기준 해상도 (자산·layout 좌표가 이 해상도에서 작성됨)
   width: 1920
   height: 1080
+  match_source: true         # 출력 해상도를 소스 영상 규격에 맞춤 (4K 소스 → 4K 출력).
+                             # false면 항상 위 width/height로 고정. 자산은 이 기준 해상도로 제작할 것.
 
 detect:                      # Phase 1 — 슬라이드 전환 감지
   # 슬라이드 전환은 흰 배경 위 텍스트 변화라 델타가 작다 (실측: 전환 7~11, 정적 구간 최대 0.44).
@@ -24,10 +26,16 @@ match:                       # Phase 3 — 대표 프레임 ↔ 슬라이드 매
   review_confidence: 0.80    # 이보다 낮으면 flag=review
   backward_margin: 0.06      # 역행 매칭 허용 기준: 단조 매칭보다 이만큼 가까울 때만
 
-matte:                       # Phase 4 — 강연자 누끼 (RVM)
+matte:                       # Phase 4 — 강연자 누끼
+  model: matanyone2          # matanyone2 | mobilenetv3 | resnet50
   crop_frac: 0.45            # 강연자 쪽에서 이 비율만큼 크롭해 매팅 (속도/품질)
+  # --- MatAnyone2 전용 (model: matanyone2) ---
+  mat2_python: .venv-matanyone2/bin/python  # 별도 3.10 환경 인터프리터 (프로젝트 루트 기준)
+  warmup: 10                 # 첫 프레임 예열 반복 (알파 안정화)
+  mask_dilate: 10            # 첫 프레임 마스크 팽창 (RVM 마스크 여유)
+  mask_erode: 10             # 첫 프레임 마스크 침식
+  # --- RVM 전용 (model: mobilenetv3 | resnet50) ---
   downsample_ratio: 0.375    # RVM 내부 다운샘플 (1080p 크롭 기준 권장값)
-  model: mobilenetv3         # mobilenetv3 | resnet50
 
 layout:
   slide_frame:               # 슬라이드가 들어갈 프레임 내부 영역 (px, 캔버스 기준)

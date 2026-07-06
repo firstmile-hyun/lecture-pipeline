@@ -1,5 +1,8 @@
 # 로컬 환경
 .venv/
+.venv-matanyone2/
+.matanyone2_build/
+pretrained_models/
 __pycache__/
 *.pyc
 .DS_Store

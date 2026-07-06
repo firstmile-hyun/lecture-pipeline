@@ -8,3 +8,4 @@ numpy>=1.26
 tqdm>=4.66
 torch>=2.3
 torchvision>=0.18
+pywebview>=6.2

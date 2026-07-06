@@ -11,6 +11,23 @@ uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
+### Phase 4 누끼 환경 (MatAnyone 2, 별도 환경)
+
+누끼(Phase 4)는 **MatAnyone 2**를 쓰며, Python 3.10 별도 환경(`.venv-matanyone2`)이
+필요하다. 본체(3.11)와 분리돼 있고 `matte.py`가 subprocess로 호출한다:
+
+```bash
+zsh tools/setup_matanyone2.sh
+```
+
+- 첫 실행 시 모델(`matanyone2.pth`, ~135MB)이 `pretrained_models/`에 자동 다운로드된다.
+- **속도 주의**: mps에서 약 2.3fps — 20분 영상 기준 편당 **~4.4시간**. 13편 일괄은 배치로
+  밤새 돌릴 것. 빠른 대안이 필요하면 `config.yaml`의 `matte.model`을 `resnet50`(RVM)으로
+  바꾸면 훨씬 빠르다(품질은 스튜디오 배경 기준 대등, 난구간에선 MatAnyone2 우세).
+- **용량 주의**: 출력 `speaker_alpha.mov`는 ProRes 4444(알파)라 편당 수십 GB. 프리미어
+  임포트·출력 후에는 삭제해도 `--step matte`로 재생성 가능.
+- 첫 프레임 마스크는 SAM2 대신 RVM 알파 이진화로 자동 생성한다(단일 프레임, 별도 설치 불필요).
+
 ## 데스크톱 앱 (권장)
 
 터미널 없이 쓰려면 **`LecturePipeline.app` 더블클릭** (또는 `앱실행.command` — 터미널 창이 함께 열림).
@@ -54,7 +71,7 @@ episodes/ep01/slides.pdf     # 강의자료 (PPT는 PDF로 변환)
 | detect | source.mp4 | cuts.csv, scene_frames/ | 슬라이드 전환 감지 (PySceneDetect, 강연자 영역 제외 crop) |
 | slides | slides.pdf | slides_png/ | PDF → PNG (최소 1600px 폭) |
 | match  | 위 둘 | match.csv | phash 매칭 + 단조 증가 DP, 역행은 backward, 저신뢰는 review 플래그 |
-| matte  | source.mp4 | speaker_alpha.mov | RVM(mps)으로 강연자 누끼 → ProRes 4444 알파 |
+| matte  | source.mp4 | speaker_alpha.mov | MatAnyone2(mps)로 강연자 누끼 → ProRes 4444 알파. 첫프레임 마스크는 RVM 자동 생성 |
 | xml    | 전부 | sequence.xml | 프리미어 임포트용 xmeml 시퀀스 조립 |
 
 - 스킵 판정은 mtime 기반 신선도 검사다: 업스트림 산출물이 갱신되면 다운스트림은 다음 실행에서

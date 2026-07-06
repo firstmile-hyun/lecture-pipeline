@@ -8,15 +8,17 @@ RVM 출력(fgr+pha)을 ffmpeg ProRes 4444 (yuva444p10le)로 인코딩한다.
 
 import os
 import subprocess
+import sys
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # mps 미지원 연산은 CPU로
 
 import cv2
 import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
 
-from .config import episode_dir, output_dir
+from .config import ROOT, episode_dir, output_dir
 from .util import log, outputs_fresh, video_info
 
 
@@ -28,6 +30,92 @@ def _device() -> torch.device:
 
 
 def run(episode: str, cfg: dict, force: bool = False, sample_sec: float | None = None) -> None:
+    """Phase 4 디스패처: config matte.model에 따라 MatAnyone2 또는 RVM 경로."""
+    if cfg["matte"].get("model") == "matanyone2":
+        _run_matanyone2(episode, cfg, force=force, sample_sec=sample_sec)
+    else:
+        _run_rvm(episode, cfg, force=force, sample_sec=sample_sec)
+
+
+# ---------------------------------------------------------------- MatAnyone 2 경로
+
+
+def _crop_geom(width: int, crop_frac: float, side: str) -> tuple[int, int]:
+    """강연자 쪽 크롭 폭(짝수)과 x 오프셋. 워커와 반드시 동일한 수식."""
+    cw = int(width * crop_frac) // 2 * 2
+    x0 = width - cw if side == "right" else 0
+    return cw, x0
+
+
+def _gen_firstframe_mask(src, cw: int, x0: int, out_png) -> None:
+    """RVM(mobilenetv3)으로 첫 프레임 강연자 마스크 1장 생성 → MatAnyone2 입력.
+
+    SAM2 포인트 프롬프트 대신, 이미 검증된 RVM 알파를 이진화해 쓴다(단일 프레임이라 빠름).
+    """
+    device = _device()
+    log(f"[matte] 첫 프레임 마스크 생성(RVM)…")
+    model = torch.hub.load("PeterL1n/RobustVideoMatting", "mobilenetv3", trust_repo=True)
+    model = model.to(device).eval()
+    cap = cv2.VideoCapture(str(src))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise RuntimeError("[matte] 첫 프레임 마스크: 소스 읽기 실패")
+    crop = frame[:, x0:x0 + cw]
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    t = torch.from_numpy(rgb).to(device).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    with torch.inference_mode():
+        _, pha, *_ = model(t, downsample_ratio=0.25)
+    m = (pha[0, 0].cpu().numpy() > 0.5).astype(np.uint8) * 255
+    Image.fromarray(m, mode="L").save(out_png)
+
+
+def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | None) -> None:
+    src = episode_dir(episode) / "source.mp4"
+    if not src.exists():
+        raise FileNotFoundError(f"{src} 없음")
+
+    out = output_dir(episode)
+    dst = out / ("speaker_alpha_sample.mov" if sample_sec else "speaker_alpha.mov")
+    if not force and outputs_fresh([dst], [src]):
+        log(f"[{episode}] matte: {dst.name} 최신 → 스킵 (--force로 재실행)")
+        return
+
+    mcfg = cfg["matte"]
+    dcfg = cfg["detect"]
+    info = video_info(src)
+    cw, x0 = _crop_geom(info.width, mcfg["crop_frac"], dcfg["speaker_side"])
+
+    mask_png = out / "_firstframe_mask.png"
+    _gen_firstframe_mask(src, cw, x0, mask_png)
+
+    worker = ROOT / "pipeline" / "matte_mat2.py"
+    py = ROOT / mcfg.get("mat2_python", ".venv-matanyone2/bin/python")
+    if not py.exists():
+        raise FileNotFoundError(
+            f"{py} 없음 — MatAnyone2 환경 미구축. README의 설치 절차 참고")
+    cmd = [
+        str(py), str(worker),
+        "--source", str(src), "--mask", str(mask_png), "--out", str(dst),
+        "--crop-frac", str(mcfg["crop_frac"]), "--side", dcfg["speaker_side"],
+        "--warmup", str(mcfg.get("warmup", 10)),
+        "--erode", str(mcfg.get("mask_erode", 10)),
+        "--dilate", str(mcfg.get("mask_dilate", 10)),
+    ]
+    if sample_sec:
+        cmd += ["--sample-sec", str(sample_sec)]
+
+    log(f"[{episode}] matte: MatAnyone2 서브프로세스 실행 (mps, 느림 — 진행바 참고)")
+    env = {**os.environ, "PYTORCH_ENABLE_MPS_FALLBACK": "1"}
+    r = subprocess.run(cmd, cwd=ROOT, env=env)  # stdout/stderr 상속 → 상위 로그로 스트리밍
+    if r.returncode != 0:
+        raise RuntimeError(f"[{episode}] matte: MatAnyone2 워커 실패 (code {r.returncode})")
+
+
+# ---------------------------------------------------------------- RVM 경로 (레거시/폴백)
+
+
+def _run_rvm(episode: str, cfg: dict, force: bool = False, sample_sec: float | None = None) -> None:
     src = episode_dir(episode) / "source.mp4"
     if not src.exists():
         raise FileNotFoundError(f"{src} 없음")

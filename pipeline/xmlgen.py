@@ -309,7 +309,18 @@ def run(episode: str, cfg: dict, force: bool = False) -> None:
     info = video_info(src)
     timebase, ntsc = fps_to_timebase(info.fps)
     layout = cfg["layout"]
-    W, H = cfg["canvas"]["width"], cfg["canvas"]["height"]
+    # 출력 해상도는 소스 규격을 따른다(canvas.match_source). 자산·레이아웃 좌표는
+    # canvas(설계 기준) 해상도에서 작성됐다고 보고 배율 k로 스케일한다.
+    # 소스가 기준과 같으면(예: FHD=FHD) k=1 → 기존과 동일.
+    ref_w, ref_h = cfg["canvas"]["width"], cfg["canvas"]["height"]
+    if cfg["canvas"].get("match_source", True):
+        W, H = info.width, info.height
+    else:
+        W, H = ref_w, ref_h
+    k = W / ref_w
+    if abs(W / H - ref_w / ref_h) > 0.02:
+        log(f"[{episode}] xml: 경고 — 소스 종횡비 {W}x{H}가 기준 {ref_w}x{ref_h}와 달라 "
+            f"레이아웃이 늘어날 수 있음")
 
     body = info.nb_frames
     segs = _load_segments(match_csv, body, info.fps)
@@ -324,6 +335,7 @@ def run(episode: str, cfg: dict, force: bool = False) -> None:
     total = intro_f + body + outro_f
 
     b = _SeqBuilder(episode, cfg, info.fps)
+    b.canvas_w, b.canvas_h = W, H   # 모션 center 정규화를 출력 해상도 기준으로
 
     xmeml = ET.Element("xmeml", version="4")
     seq = _sub(xmeml, "sequence", id="sequence-1", explodedTracks="true")
@@ -335,29 +347,30 @@ def run(episode: str, cfg: dict, force: bool = False) -> None:
     fmt = _sub(video, "format")
     _video_sc(fmt, W, H, timebase, ntsc)
 
-    # ---- V1: intro / bg_card / outro
+    # ---- V1: intro / bg_card / outro (기준 해상도 자산 → 캔버스 채우도록 k배 확대)
     v1 = _sub(video, "track")
     if intro:
-        b.still_clip(v1, intro, 0, intro_f)
+        b.still_clip(v1, intro, 0, intro_f, scale_pct=k * 100)
     if bg_card.exists():
-        b.still_clip(v1, bg_card, intro_f, intro_f + body)
+        b.still_clip(v1, bg_card, intro_f, intro_f + body, scale_pct=k * 100)
     else:
         log(f"[{episode}] xml: assets/bg_card.png 없음 — V1 배경 생략")
     if outro:
-        b.still_clip(v1, outro, intro_f + body, total)
+        b.still_clip(v1, outro, intro_f + body, total, scale_pct=k * 100)
 
-    # ---- V2: 슬라이드 (프레임 영역에 fit-inside)
+    # ---- V2: 슬라이드 (프레임 영역에 fit-inside). 프레임 좌표는 k배 스케일
     v2 = _sub(video, "track")
     sf = layout["slide_frame"]
-    frame_cx = sf["x"] + sf["width"] / 2 - W / 2
-    frame_cy = sf["y"] + sf["height"] / 2 - H / 2
+    sfx, sfy, sfw, sfh = sf["x"] * k, sf["y"] * k, sf["width"] * k, sf["height"] * k
+    frame_cx = sfx + sfw / 2 - W / 2
+    frame_cy = sfy + sfh / 2 - H / 2
     for seg in segs:
         page_png = slides_dir / f"page_{seg['page']:03d}.png"
         if not page_png.exists():
             log(f"[{episode}] xml: {page_png.name} 없음 — 구간 스킵 (scene {seg})")
             continue
         iw, ih = _png_size(page_png)
-        s = min(sf["width"] / iw, sf["height"] / ih)
+        s = min(sfw / iw, sfh / ih)
         b.still_clip(v2, page_png, intro_f + seg["start"], intro_f + seg["end"],
                      scale_pct=s * 100, dx=frame_cx, dy=frame_cy)
 
@@ -377,8 +390,10 @@ def run(episode: str, cfg: dict, force: bool = False) -> None:
                 f"({sinfo.nb_frames}f < {body}f). V3를 그 길이까지만 배치. "
                 f"전체 매팅은 --step matte --force")
             v3_body = sinfo.nb_frames
+        # 누끼 native 해상도는 소스 크롭이라 이미 소스 규격에 비례 → scale는 그대로,
+        # 앵커 기준점만 k배 (배치 위치를 출력 캔버스에 맞춤)
         rw, rh = sinfo.width * sp["scale"], sinfo.height * sp["scale"]
-        cx, cy = _anchor_center(sp["anchor"], sp["x"], sp["y"], rw, rh)
+        cx, cy = _anchor_center(sp["anchor"], sp["x"] * k, sp["y"] * k, rw, rh)
         v3 = _sub(video, "track")
         b.video_clip(v3, speaker_mov, intro_f, intro_f + v3_body,
                      src_in=0, width=sinfo.width, height=sinfo.height,
@@ -404,12 +419,13 @@ def run(episode: str, cfg: dict, force: bool = False) -> None:
                 if not badge.exists():
                     log(f"[{episode}] xml: 배지 {ch['badge_png']} 없음 — 스킵")
                     continue
+                # 배지 PNG는 고정 해상도 자산 → 크기·위치 모두 k배
                 bw, bh = _png_size(badge)
-                rw, rh = bw * bcfg["scale"], bh * bcfg["scale"]
-                cx, cy = _anchor_center(bcfg["anchor"], bcfg["x"], bcfg["y"], rw, rh)
+                rw, rh = bw * bcfg["scale"] * k, bh * bcfg["scale"] * k
+                cx, cy = _anchor_center(bcfg["anchor"], bcfg["x"] * k, bcfg["y"] * k, rw, rh)
                 end = starts[i + 1] if i + 1 < len(starts) else body
                 b.still_clip(v4, badge, intro_f + starts[i], intro_f + end,
-                             scale_pct=bcfg["scale"] * 100,
+                             scale_pct=bcfg["scale"] * k * 100,
                              dx=cx - W / 2, dy=cy - H / 2)
 
     # ---- 오디오: source.mp4 (본편 구간)
