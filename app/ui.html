@@ -200,7 +200,7 @@
   <div id="matteView" class="hidden">
     <div class="matte-wrap">
       <div class="mv-title">누끼 전용 — 강연자 알파 영상 추출</div>
-      <p class="mv-sub">영상 하나만 넣으면 배경을 제거한 알파 영상(speaker_alpha.mov)을 만들어요. PDF·에피소드 없이 이 기능만 씁니다.</p>
+      <p class="mv-sub">영상 하나만 넣으면 배경을 제거한 알파 영상(speaker_alpha.mov)을 만들어요. PDF·에피소드 없이 이 기능만 씁니다. · 모델: MatAnyone2</p>
 
       <div class="card">
         <h2>원본 영상</h2>
@@ -210,13 +210,6 @@
             <select id="mSide">
               <option value="right">오른쪽</option>
               <option value="left">왼쪽</option>
-            </select>
-          </label>
-          <label>모델
-            <select id="mModel">
-              <option value="matanyone2">MatAnyone2 (고품질·느림)</option>
-              <option value="mobilenetv3">RVM mobilenetv3 (빠름)</option>
-              <option value="resnet50">RVM resnet50</option>
             </select>
           </label>
           <label>크롭 비율
@@ -390,7 +383,7 @@ async function runMatte(sampleSec) {
   if (!state.matteVideo || state.running) return;
   const crop = parseFloat($("#mCrop").value);
   const r = await api().run_matte(
-    state.matteVideo, $("#mSide").value, $("#mModel").value, crop, sampleSec, $("#mForce").checked);
+    state.matteVideo, $("#mSide").value, "matanyone2", crop, sampleSec, $("#mForce").checked);
   if (r.error) return toast(r.error, 4200);
   state.running = true; state.runKind = "matte"; state.matteSample = !!sampleSec; progEl = null;
   for (const id of ["mOpen", "mReveal", "mExport"]) $("#" + id).disabled = true;
