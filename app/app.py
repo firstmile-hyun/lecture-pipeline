@@ -36,6 +36,8 @@ STEP_OUTPUTS = {
     "xml": "sequence.xml",
 }
 
+MATTE_WS = "_matte"  # 누끼 전용 작업 폴더 (에피소드 목록에서 숨김)
+
 
 def _load_settings() -> dict:
     try:
@@ -88,7 +90,8 @@ class Api:
         if not ep_root.is_dir():
             return eps
         for d in sorted(ep_root.iterdir()):
-            if not d.is_dir() or not (d / "source.mp4").exists():
+            # _로 시작하는 폴더는 예약 작업 공간(누끼 전용 등) — 목록에서 숨김
+            if not d.is_dir() or d.name.startswith("_") or not (d / "source.mp4").exists():
                 continue
             out = d / "output"
             status = {step: (out / f).exists() for step, f in STEP_OUTPUTS.items()}
@@ -180,6 +183,88 @@ class Api:
             self.proc = proc
             threading.Thread(target=self._stream, args=(proc,), daemon=True).start()
         return {"ok": True}
+
+    # ------------------------------------------------------------ 누끼 전용
+    #
+    # 통합 파이프라인과 무관하게 영상 하나만 매팅한다. 임의의 영상을 예약 작업
+    # 폴더(episodes/_matte)에 스테이징하고 matte 단계만 돌린다 — matte는 detect/
+    # match 산출물에 의존하지 않으므로 기존 파이프라인을 그대로 재사용할 수 있다.
+
+    def run_matte(self, video: str, side: str, model: str, crop_frac,
+                  sample_sec: float | None, force: bool):
+        vp = Path(video)
+        if not vp.is_file():
+            return {"error": f"영상 파일을 찾을 수 없어요: {video}"}
+        if vp.suffix.lower() not in (".mp4", ".mov", ".m4v"):
+            return {"error": f"영상 파일이 아니에요: {vp.name}"}
+        if side not in ("right", "left"):
+            return {"error": "강연자 위치 값이 올바르지 않아요"}
+        if model not in ("matanyone2", "mobilenetv3", "resnet50"):
+            return {"error": "모델 값이 올바르지 않아요"}
+        try:
+            cf = float(crop_frac)
+        except (TypeError, ValueError):
+            return {"error": "크롭 비율이 숫자가 아니에요"}
+        if not 0.1 <= cf <= 1.0:
+            return {"error": "크롭 비율은 0.1~1.0 사이여야 해요"}
+
+        with self._lock:
+            if self.proc and self.proc.poll() is None:
+                return {"error": "이미 실행 중이에요"}
+
+        ep = ROOT / "episodes" / MATTE_WS
+        ep.mkdir(parents=True, exist_ok=True)
+        src = ep / "source.mp4"
+        if src.exists() and not src.is_symlink():
+            return {"error": "episodes/_matte/source.mp4가 실제 파일로 존재해요 — Finder에서 정리 후 다시 시도"}
+
+        # 원본은 심링크(수 GB 복사 방지). 소스나 옵션이 바뀌면 이전 산출물을
+        # 무효화한다 — mtime 프레시 검사가 스킵으로 오판하지 않도록.
+        changed = False
+        target = vp.resolve()
+        if src.is_symlink():
+            if src.resolve() != target:
+                changed = True
+            src.unlink()
+        src.symlink_to(target)
+
+        cfg_text = (
+            "# 누끼 전용 UI가 자동 생성 — 실행마다 덮어씀\n"
+            "detect:\n"
+            f"  speaker_side: {side}\n"
+            "matte:\n"
+            f"  model: {model}\n"
+            f"  crop_frac: {cf}\n"
+        )
+        cfg_path = ep / "config.yaml"
+        if not cfg_path.exists() or cfg_path.read_text(encoding="utf-8") != cfg_text:
+            cfg_path.write_text(cfg_text, encoding="utf-8")
+            changed = True
+
+        out = ep / "output"
+        if changed and out.is_dir():
+            shutil.rmtree(out)
+
+        return self.run_pipeline(MATTE_WS, "matte", force, sample_sec)
+
+    def export_matte(self, sample: bool = False):
+        name = "speaker_alpha_sample.mov" if sample else "speaker_alpha.mov"
+        src = ROOT / "episodes" / MATTE_WS / "output" / name
+        if not src.exists():
+            return {"error": f"{name}이 아직 없어요 — 먼저 실행하세요"}
+        s = _load_settings()
+        r = self.window.create_file_dialog(
+            webview.SAVE_DIALOG,
+            directory=s.get("export_dir", str(Path.home() / "Desktop")),
+            save_filename=name,
+        )
+        if not r:
+            return {"cancelled": True}
+        dest = Path(r if isinstance(r, str) else r[0])
+        shutil.copy2(src, dest)
+        s["export_dir"] = str(dest.parent)
+        _save_settings(s)
+        return {"ok": True, "path": str(dest)}
 
     def _stream(self, proc: subprocess.Popen) -> None:
         """서브프로세스 출력을 \\n과 \\r(tqdm 진행바) 둘 다 기준으로 잘라 UI로 전달."""

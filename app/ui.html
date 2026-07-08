@@ -105,14 +105,50 @@
     border-radius: 10px; padding: 10px 18px; font-size: 13px; z-index: 20;
     box-shadow: 0 8px 30px rgba(0,0,0,.4); transition: opacity .3s; opacity: 0; pointer-events: none;
   }
+
+  /* ---------- 상단 뷰 전환 탭 ---------- */
+  #nav { display: flex; gap: 6px; margin-left: 8px; }
+  .navbtn {
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 14px; font-size: 12px; font-weight: 600;
+  }
+  .navbtn:hover { color: var(--text); }
+  .navbtn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* ---------- 누끼 전용 뷰 ---------- */
+  #mainView { flex: 1; display: flex; min-height: 0; }
+  #matteView { flex: 1; padding: 22px; overflow-y: auto; }
+  .matte-wrap { max-width: 760px; margin: 0 auto; width: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .mv-title { font-size: 18px; font-weight: 700; }
+  .mv-sub { color: var(--dim); font-size: 13px; margin-top: -8px; }
+  .opts { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 4px; }
+  .opts label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
+  select, input[type=number] {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text); padding: 7px 10px; font-size: 13px; outline: none;
+  }
+  select:focus, input[type=number]:focus { border-color: var(--accent); }
+  input[type=number] { width: 100px; }
+  #matteLog {
+    background: #0d1116; border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; overflow-y: auto; font: 12px/1.7 "SF Mono", Menlo, monospace;
+    color: #b7c2cf; white-space: pre-wrap; user-select: text; height: 300px;
+  }
+  #matteLog .prog { color: var(--accent); }
+  #matteLog .err { color: var(--err); }
+  #matteLog .okline { color: var(--ok); }
 </style>
 </head>
 <body>
 <header>
-  <h1>강의 영상 리디자인 파이프라인</h1>
-  <span>영상 + PDF → 프리미어 시퀀스 XML</span>
+  <h1>강의 파이프라인</h1>
+  <nav id="nav">
+    <button id="navMain" class="navbtn active">통합 파이프라인</button>
+    <button id="navMatte" class="navbtn">누끼 전용</button>
+  </nav>
 </header>
 <main>
+  <div id="mainView">
   <div id="sidebar">
     <div class="card">
       <h2>새 에피소드</h2>
@@ -159,6 +195,50 @@
       </div>
     </div>
   </div>
+  </div><!-- /mainView -->
+
+  <div id="matteView" class="hidden">
+    <div class="matte-wrap">
+      <div class="mv-title">누끼 전용 — 강연자 알파 영상 추출</div>
+      <p class="mv-sub">영상 하나만 넣으면 배경을 제거한 알파 영상(speaker_alpha.mov)을 만들어요. PDF·에피소드 없이 이 기능만 씁니다.</p>
+
+      <div class="card">
+        <h2>원본 영상</h2>
+        <div class="filerow" id="mPickVideo"><span>🎬</span><span class="name">원본 영상 선택…</span></div>
+        <div class="opts">
+          <label>강연자 위치
+            <select id="mSide">
+              <option value="right">오른쪽</option>
+              <option value="left">왼쪽</option>
+            </select>
+          </label>
+          <label>모델
+            <select id="mModel">
+              <option value="matanyone2">MatAnyone2 (고품질·느림)</option>
+              <option value="mobilenetv3">RVM mobilenetv3 (빠름)</option>
+              <option value="resnet50">RVM resnet50</option>
+            </select>
+          </label>
+          <label>크롭 비율
+            <input type="number" id="mCrop" min="0.1" max="1" step="0.05" value="0.45">
+          </label>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button id="mRun" disabled>▶ 누끼 실행</button>
+        <button id="mRunSample" class="ghost" disabled>30초 샘플</button>
+        <label class="toggle"><input type="checkbox" id="mForce"> 강제 재실행</label>
+        <button id="mCancel" class="danger hidden">■ 중단</button>
+        <div class="spacer"></div>
+        <button id="mOpen" class="ghost" disabled>결과 열기</button>
+        <button id="mReveal" class="ghost" disabled>Finder</button>
+        <button id="mExport" disabled>다른 위치로 저장…</button>
+      </div>
+
+      <div id="matteLog">영상을 선택하고 실행을 누르면 진행 로그가 여기 표시됩니다.</div>
+    </div>
+  </div>
 </main>
 
 <div id="modal" class="hidden"><span class="close">✕</span><img id="modalImg"></div>
@@ -166,7 +246,10 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let state = { video: null, pdf: null, current: null, running: false, episodes: [] };
+let state = { video: null, pdf: null, current: null, running: false, episodes: [],
+              matteVideo: null, matteSample: false, runKind: "main" };
+let activeView = "main";
+function curLog() { return activeView === "matte" ? $("#matteLog") : $("#log"); }
 
 function toast(msg, ms = 2600) {
   const t = $("#toast"); t.textContent = msg; t.style.opacity = 1;
@@ -177,7 +260,7 @@ function api() { return window.pywebview.api; }
 /* ---------------- 로그 ---------------- */
 let progEl = null;
 function appendLog(text, cls) {
-  const log = $("#log");
+  const log = curLog();
   const el = document.createElement("div");
   if (cls) el.className = cls;
   el.textContent = text;
@@ -193,13 +276,19 @@ window.pipelineEvent = ev => {
     appendLog(data, cls);
   } else if (kind === "progress") {
     if (!progEl) progEl = appendLog(data, "prog");
-    else { progEl.textContent = data; $("#log").scrollTop = $("#log").scrollHeight; }
+    else { progEl.textContent = data; curLog().scrollTop = curLog().scrollHeight; }
   } else if (kind === "done") {
     progEl = null;
     state.running = false;
-    appendLog(data.code === 0 ? "✓ 작업 완료" : `✗ 종료 코드 ${data.code}`, data.code === 0 ? "okline" : "err");
-    updateRunButtons();
-    refreshEpisodes().then(() => state.current && selectEpisode(state.current, true));
+    const ok = data.code === 0;
+    appendLog(ok ? "✓ 작업 완료" : `✗ 종료 코드 ${data.code}`, ok ? "okline" : "err");
+    if (state.runKind === "matte") {
+      updateMatteButtons();
+      if (ok) for (const id of ["mOpen", "mReveal", "mExport"]) $("#" + id).disabled = false;
+    } else {
+      updateRunButtons();
+      refreshEpisodes().then(() => state.current && selectEpisode(state.current, true));
+    }
   }
 };
 
@@ -273,7 +362,7 @@ async function run(step, sampleSec) {
   if (!state.current || state.running) return;
   const r = await api().run_pipeline(state.current, step, $("#force").checked, sampleSec);
   if (r.error) return toast(r.error);
-  state.running = true; progEl = null;
+  state.running = true; state.runKind = "main"; progEl = null;
   appendLog(`▶ 실행: ${step || "전체"}${$("#force").checked ? " (강제)" : ""}`);
   updateRunButtons();
 }
@@ -281,6 +370,57 @@ $("#runAll").onclick = () => run(null, null);
 $("#runSample").onclick = () => run("matte", 30);
 $("#runXml").onclick = () => run("xml", null);
 $("#cancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
+
+/* ---------------- 누끼 전용 뷰 ---------------- */
+function updateMatteButtons() {
+  $("#mRun").disabled = state.running || !state.matteVideo;
+  $("#mRunSample").disabled = state.running || !state.matteVideo;
+  $("#mCancel").classList.toggle("hidden", !state.running);
+}
+$("#mPickVideo").onclick = async () => {
+  if (state.running) return;
+  const p = await api().pick_video();
+  if (!p) return;
+  state.matteVideo = p;
+  $("#mPickVideo").classList.add("set");
+  $("#mPickVideo .name").textContent = p;
+  updateMatteButtons();
+};
+async function runMatte(sampleSec) {
+  if (!state.matteVideo || state.running) return;
+  const crop = parseFloat($("#mCrop").value);
+  const r = await api().run_matte(
+    state.matteVideo, $("#mSide").value, $("#mModel").value, crop, sampleSec, $("#mForce").checked);
+  if (r.error) return toast(r.error, 4200);
+  state.running = true; state.runKind = "matte"; state.matteSample = !!sampleSec; progEl = null;
+  for (const id of ["mOpen", "mReveal", "mExport"]) $("#" + id).disabled = true;
+  appendLog(`▶ 누끼 실행: ${sampleSec ? sampleSec + "초 샘플" : "전체"}${$("#mForce").checked ? " (강제)" : ""}`);
+  updateMatteButtons();
+}
+const matteFile = () => state.matteSample ? "speaker_alpha_sample.mov" : "speaker_alpha.mov";
+$("#mRun").onclick = () => runMatte(null);
+$("#mRunSample").onclick = () => runMatte(30);
+$("#mCancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
+$("#mOpen").onclick = () => api().open_file("_matte", matteFile());
+$("#mReveal").onclick = () => api().reveal("_matte", matteFile());
+$("#mExport").onclick = async () => {
+  const r = await api().export_matte(state.matteSample);
+  if (r.error) return toast(r.error, 4000);
+  if (r.cancelled) return;
+  toast(`저장 완료: ${r.path}`, 4200);
+};
+
+/* ---------------- 뷰 전환 ---------------- */
+function showView(v) {
+  if (state.running) return toast("실행 중에는 화면을 전환할 수 없어요");
+  activeView = v;
+  $("#mainView").classList.toggle("hidden", v !== "main");
+  $("#matteView").classList.toggle("hidden", v !== "matte");
+  $("#navMain").classList.toggle("active", v === "main");
+  $("#navMatte").classList.toggle("active", v === "matte");
+}
+$("#navMain").onclick = () => showView("main");
+$("#navMatte").onclick = () => showView("matte");
 
 /* ---------------- 새 에피소드 ---------------- */
 $("#pickVideo").onclick = async () => {
