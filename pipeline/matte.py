@@ -155,6 +155,30 @@ def _run_mat2_worker(py, src, mask_png, dst, mcfg, side: str,
         raise RuntimeError(f"matte: MatAnyone2 워커 실패 (code {r.returncode})")
 
 
+def _mux_audio(dst, src, episode: str) -> None:
+    """누끼 영상(비디오 전용 ProRes)에 원본 소스의 오디오를 입힌다.
+
+    누끼는 항상 소스 프레임 0부터라 -shortest로 누끼 길이에 맞춰 오디오가 정렬된다
+    (샘플이면 앞부분만). 프리미어 수동 조립 시 립싱크된 단일 클립으로 쓰기 위함.
+    소스에 오디오가 없으면 그대로 둔다.
+    """
+    if video_info(src).audio_channels <= 0:
+        log(f"[{episode}] matte: 소스에 오디오 없음 — 영상만 출력")
+        return
+    tmp = dst.with_name(dst.name + ".mux.mov")
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-i", str(dst), "-i", str(src),
+         "-map", "0:v:0", "-map", "1:a", "-c:v", "copy", "-c:a", "pcm_s16le",
+         "-shortest", str(tmp)])
+    if r.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        log(f"[{episode}] matte: 경고 — 오디오 합치기 실패, 영상만 유지")
+        return
+    tmp.replace(dst)
+    log(f"[{episode}] matte: 원본 오디오 포함 완료")
+
+
 def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | None) -> None:
     """청크 단위 처리 + 이어하기.
 
@@ -212,6 +236,7 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
         _gen_firstframe_mask(src, cw, x0, mask_png, scaled_wh=scaled_wh)
         log(f"[{episode}] matte: MatAnyone2 단일 실행 ({total}f, mps — 진행바 참고)")
         _run_mat2_worker(py, src, mask_png, dst, mcfg, side, start_f=0, end_f=total)
+        _mux_audio(dst, src, episode)
         _report(total)
         return
 
@@ -263,8 +288,9 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"[{episode}] matte: 병합본 프레임 수 불일치 ({got} ≠ {total})")
     tmp.replace(dst)
+    _mux_audio(dst, src, episode)
     shutil.rmtree(chunk_dir)  # 성공 시에만 정리 (실패 시 남겨 이어하기)
-    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{sh}, {total}프레임, 알파 포함)")
+    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{sh}, {total}프레임, 알파+오디오)")
     _report(total)
 
 
@@ -359,4 +385,5 @@ def _run_rvm(episode: str, cfg: dict, force: bool = False, sample_sec: float | N
             f"원본 손상 또는 VFR 여부 확인 필요"
         )
     tmp.replace(dst)
-    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{info.height}, {written}프레임, 알파 포함)")
+    _mux_audio(dst, src, episode)
+    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{info.height}, {written}프레임, 알파+오디오)")
