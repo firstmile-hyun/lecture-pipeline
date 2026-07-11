@@ -42,6 +42,8 @@ def main() -> None:
     ap.add_argument("--end-frame", type=int, default=None, help="처리 끝 프레임(미포함, 청크)")
     ap.add_argument("--lead-frames", type=int, default=0,
                     help="시작 전 실프레임 리드인(출력 제외) — 청크 경계 알파 연속성용")
+    ap.add_argument("--max-height", type=int, default=None,
+                    help="이보다 높으면 이 높이로 비례 축소 후 매팅 (예: 4K→1080). matte.py와 동일 수식")
     a = ap.parse_args()
 
     device = get_default_device()
@@ -73,15 +75,32 @@ def main() -> None:
     if seek_to > 0:
         cap.set(cv2.CAP_PROP_POS_FRAMES, seek_to)
 
-    # matte.py의 RVM 마스크 생성과 동일한 크롭 (짝수 폭 · 짝수 오프셋)
-    cw = int(W0 * a.crop_frac) // 2 * 2
+    # max_height: 원본이 더 크면 이 높이로 비례 축소 후 매팅 (matte._scaled_geom과 동일 수식)
+    if a.max_height and H > a.max_height:
+        sw = round(W0 * a.max_height / H)
+        sw -= sw % 2
+        sh = a.max_height
+    else:
+        sw, sh = W0, H
+    scaled = (sw, sh) != (W0, H)
+
+    # matte.py의 RVM 마스크 생성과 동일한 크롭 (짝수 폭 · 짝수 오프셋) — 축소 폭 기준
+    cw = int(sw * a.crop_frac) // 2 * 2
     if a.side == "right":
-        x0 = W0 - cw
+        x0 = sw - cw
     elif a.side == "center":
-        x0 = (W0 - cw) // 2 // 2 * 2
+        x0 = (sw - cw) // 2 // 2 * 2
     else:
         x0 = 0
-    print(f"[matte] 크롭 {cw}x{H} (x0={x0}), 프레임 {start}–{end} ({n}f), fps={fps:.3f}", flush=True)
+
+    def _crop(frame):
+        if scaled:
+            frame = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_AREA)
+        return frame[:, x0:x0 + cw]
+
+    print(f"[matte] 크롭 {cw}x{sh} (x0={x0}"
+          f"{f', 축소 {W0}x{H}→{sw}x{sh}' if scaled else ''}), "
+          f"프레임 {start}–{end} ({n}f), fps={fps:.3f}", flush=True)
 
     mask = np.array(Image.open(a.mask).convert("L"))
     if a.dilate > 0:
@@ -94,7 +113,7 @@ def main() -> None:
     tmp = a.out + ".part.mov"
     ff = subprocess.Popen(
         ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba",
-         "-s", f"{cw}x{H}", "-r", f"{fps}", "-i", "-",
+         "-s", f"{cw}x{sh}", "-r", f"{fps}", "-i", "-",
          "-c:v", "prores_ks", "-profile:v", "4444",
          "-pix_fmt", "yuva444p10le", "-vendor", "apl0", tmp],
         stdin=subprocess.PIPE,
@@ -103,7 +122,7 @@ def main() -> None:
     ok, f0 = cap.read()
     if not ok:
         sys.exit("[matte] 소스 첫 프레임 읽기 실패")
-    f0 = f0[:, x0:x0 + cw]
+    f0 = _crop(f0)
 
     # 반복 순서: [0..warmup) 첫 프레임 반복 예열 → [warmup..warmup+lead) 리드인 실프레임
     # (추적만) → [warmup+lead..total) 본 구간 출력. lead=0이면 기존과 동일.
@@ -119,7 +138,7 @@ def main() -> None:
                 ok, fr = cap.read()
                 if not ok:
                     break
-                bgr = fr[:, x0:x0 + cw]
+                bgr = _crop(fr)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             img = (torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.).to(device)
 

@@ -41,27 +41,38 @@ def run(episode: str, cfg: dict, force: bool = False, sample_sec: float | None =
 # ---------------------------------------------------------------- MatAnyone 2 경로
 
 
-def _crop_geom(width: int, crop_frac: float, side: str) -> tuple[int, int]:
-    """강연자 쪽 크롭 폭(짝수)과 x 오프셋. 워커와 반드시 동일한 수식.
+def _scaled_geom(width: int, height: int, crop_frac: float, side: str,
+                 max_height: int | None = None) -> tuple[int, int, int, int]:
+    """매팅 대상 해상도(스케일 후)와 크롭 기하. 워커와 반드시 동일한 수식.
 
-    side: right | left | center (중앙 인물 — 신규 촬영본의 흰회색 배경용)
+    max_height가 있고 원본이 더 크면 그 높이로 비례 축소한 뒤 크롭한다
+    (예: 4K 소스를 1080으로 낮춰 매팅 — 속도 ~4배, 화면 표시 크기엔 충분).
+    반환: (scaled_w, scaled_h, crop_w, x0). side: right | left | center.
     """
-    cw = int(width * crop_frac) // 2 * 2
+    if max_height and height > max_height:
+        sw = round(width * max_height / height)
+        sw -= sw % 2          # 인코더 호환 짝수 폭
+        sh = max_height
+    else:
+        sw, sh = width, height
+    cw = int(sw * crop_frac) // 2 * 2
     if side == "right":
-        x0 = width - cw
+        x0 = sw - cw
     elif side == "center":
-        x0 = (width - cw) // 2 // 2 * 2  # 짝수 오프셋
+        x0 = (sw - cw) // 2 // 2 * 2  # 짝수 오프셋
     else:
         x0 = 0
-    return cw, x0
+    return sw, sh, cw, x0
 
 
 def _gen_firstframe_mask(src, cw: int, x0: int, out_png, frame_idx: int = 0,
+                         scaled_wh: tuple[int, int] | None = None,
                          _model_cache: dict = {}) -> None:
     """RVM(mobilenetv3)으로 지정 프레임의 강연자 마스크 1장 생성 → MatAnyone2 입력.
 
     SAM2 포인트 프롬프트 대신, 이미 검증된 RVM 알파를 이진화해 쓴다(단일 프레임이라 빠름).
     청크 처리에선 청크 시작 프레임마다 호출되므로 모델은 프로세스 내 캐시.
+    scaled_wh가 있으면 크롭 전에 프레임을 그 해상도로 축소(워커와 동일 — max_height).
     """
     device = _device()
     log(f"[matte] 프레임 {frame_idx} 마스크 생성(RVM)…")
@@ -76,6 +87,8 @@ def _gen_firstframe_mask(src, cw: int, x0: int, out_png, frame_idx: int = 0,
     cap.release()
     if not ok:
         raise RuntimeError(f"[matte] 마스크 생성: 프레임 {frame_idx} 읽기 실패")
+    if scaled_wh and (frame.shape[1], frame.shape[0]) != scaled_wh:
+        frame = cv2.resize(frame, scaled_wh, interpolation=cv2.INTER_AREA)
     crop = frame[:, x0:x0 + cw]
     rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
     t = torch.from_numpy(rgb).to(device).permute(2, 0, 1).unsqueeze(0).float() / 255.0
@@ -128,6 +141,8 @@ def _run_mat2_worker(py, src, mask_png, dst, mcfg, side: str,
         "--erode", str(mcfg.get("mask_erode", 10)),
         "--dilate", str(mcfg.get("mask_dilate", 10)),
     ]
+    if mcfg.get("max_height"):
+        cmd += ["--max-height", str(int(mcfg["max_height"]))]
     if start_f is not None:
         cmd += ["--start-frame", str(start_f)]
     if end_f is not None:
@@ -161,7 +176,12 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
     side = cfg["detect"]["speaker_side"]
     info = video_info(src)
     fps = float(info.fps)
-    cw, x0 = _crop_geom(info.width, mcfg["crop_frac"], side)
+    max_h = mcfg.get("max_height")
+    sw, sh, cw, x0 = _scaled_geom(info.width, info.height, mcfg["crop_frac"], side, max_h)
+    scaled_wh = (sw, sh) if (sw, sh) != (info.width, info.height) else None
+    if scaled_wh:
+        log(f"[{episode}] matte: 소스 {info.width}x{info.height} → 매팅 {sw}x{sh} "
+            f"(max_height={max_h})")
 
     py = ROOT / mcfg.get("mat2_python", ".venv-matanyone2/bin/python")
     if not py.exists():
@@ -189,7 +209,7 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
     # ---- 단일 실행 경로 (짧은 영상/샘플): 청크 오버헤드 불필요
     if total <= chunk_frames:
         mask_png = out / "_firstframe_mask.png"
-        _gen_firstframe_mask(src, cw, x0, mask_png)
+        _gen_firstframe_mask(src, cw, x0, mask_png, scaled_wh=scaled_wh)
         log(f"[{episode}] matte: MatAnyone2 단일 실행 ({total}f, mps — 진행바 참고)")
         _run_mat2_worker(py, src, mask_png, dst, mcfg, side, start_f=0, end_f=total)
         _report(total)
@@ -214,7 +234,7 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
         mask_png = chunk_dir / f"mask_{i:03d}.png"
         if i == 1:
             lead = 0
-            _gen_firstframe_mask(src, cw, x0, mask_png, frame_idx=0)
+            _gen_firstframe_mask(src, cw, x0, mask_png, frame_idx=0, scaled_wh=scaled_wh)
         else:
             prev_s, prev_e = ranges[i - 2]
             # 마스크는 이전 청크 내부 프레임이어야 하므로 lead ≥ 1 보장
@@ -244,7 +264,7 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
         raise RuntimeError(f"[{episode}] matte: 병합본 프레임 수 불일치 ({got} ≠ {total})")
     tmp.replace(dst)
     shutil.rmtree(chunk_dir)  # 성공 시에만 정리 (실패 시 남겨 이어하기)
-    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{info.height}, {total}프레임, 알파 포함)")
+    log(f"[{episode}] matte: 완료 → {dst} ({cw}x{sh}, {total}프레임, 알파 포함)")
     _report(total)
 
 
