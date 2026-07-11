@@ -10,6 +10,7 @@ ProRes 4444 알파(.mov). 프레임은 cv2 스트리밍(메모리 절약 + torch
 import argparse
 import subprocess
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -109,6 +110,7 @@ def main() -> None:
     out_from = a.warmup + lead
     total = a.warmup + lead + n
     written = 0
+    t0 = time.time()
     with torch.inference_mode():
         for ti in tqdm(range(total), desc="matte(MatAnyone2)", unit="f"):
             if ti <= a.warmup:            # 0..warmup: 리드인 시작 프레임 반복
@@ -148,7 +150,9 @@ def main() -> None:
         os.path.exists(tmp) and os.remove(tmp)
         sys.exit(f"[matte] {n}프레임 중 {written}프레임만 처리됨 — 원본 손상/VFR 확인 필요")
     os.replace(tmp, a.out)
-    print(f"[matte] 완료 → {a.out} ({cw}x{H}, {written}프레임, 알파 포함)", flush=True)
+    el = time.time() - t0
+    print(f"[matte] 완료 → {a.out} ({cw}x{H}, {written}프레임, 알파 포함) — "
+          f"{el:.0f}초, {total / el:.2f} f/s", flush=True)
 
 
 if __name__ == "__main__":

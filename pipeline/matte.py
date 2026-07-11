@@ -173,12 +173,26 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
         total = min(total, round(fps * sample_sec))
     chunk_frames = max(1, round(fps * mcfg.get("chunk_sec", 300)))
 
+    import time as _time
+    t0 = _time.time()
+
+    def _report(processed: int) -> None:
+        """소요시간 로그 + (샘플이면) 전체 영상 예상 소요시간."""
+        el = _time.time() - t0
+        rate = processed / el if el > 0 else 0
+        log(f"[{episode}] matte: 소요 {el:.0f}초 ({rate:.2f} f/s, {processed}f)")
+        if sample_sec and processed < info.nb_frames and rate > 0:
+            est = info.nb_frames / rate
+            log(f"[{episode}] matte: 전체 {info.nb_frames}f 예상 소요 ≈ "
+                f"{est / 60:.0f}분 (이 영상 실측 속도 기준)")
+
     # ---- 단일 실행 경로 (짧은 영상/샘플): 청크 오버헤드 불필요
     if total <= chunk_frames:
         mask_png = out / "_firstframe_mask.png"
         _gen_firstframe_mask(src, cw, x0, mask_png)
         log(f"[{episode}] matte: MatAnyone2 단일 실행 ({total}f, mps — 진행바 참고)")
         _run_mat2_worker(py, src, mask_png, dst, mcfg, side, start_f=0, end_f=total)
+        _report(total)
         return
 
     # ---- 청크 경로
@@ -231,6 +245,7 @@ def _run_matanyone2(episode: str, cfg: dict, force: bool, sample_sec: float | No
     tmp.replace(dst)
     shutil.rmtree(chunk_dir)  # 성공 시에만 정리 (실패 시 남겨 이어하기)
     log(f"[{episode}] matte: 완료 → {dst} ({cw}x{info.height}, {total}프레임, 알파 포함)")
+    _report(total)
 
 
 # ---------------------------------------------------------------- RVM 경로 (레거시/폴백)

@@ -176,7 +176,7 @@
 
       <div class="toolbar">
         <button id="runAll">▶ 전체 실행</button>
-        <button id="runSample" class="ghost">30초 샘플 누끼</button>
+        <button id="runSample" class="ghost">15초 샘플 누끼</button>
         <button id="runXml" class="ghost">XML만 다시 생성</button>
         <label class="toggle"><input type="checkbox" id="force"> 강제 재실행</label>
         <button id="cancel" class="danger hidden">■ 중단</button>
@@ -262,7 +262,7 @@
 
       <div class="toolbar">
         <button id="mRun" disabled>▶ 누끼 실행</button>
-        <button id="mRunSample" class="ghost" disabled>30초 샘플</button>
+        <button id="mRunSample" class="ghost" disabled>15초 샘플</button>
         <label class="toggle"><input type="checkbox" id="mForce"> 강제 재실행</label>
         <button id="mCancel" class="danger hidden">■ 중단</button>
         <div class="spacer"></div>
@@ -409,7 +409,7 @@ async function run(step, sampleSec) {
   updateRunButtons();
 }
 $("#runAll").onclick = () => run(null, null);
-$("#runSample").onclick = () => run("matte", 30);
+$("#runSample").onclick = () => run("matte", 15);
 $("#runXml").onclick = () => run("xml", null);
 $("#cancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
 
@@ -504,7 +504,7 @@ async function runMatte(sampleSec) {
 }
 const matteFile = () => state.matteSample ? "speaker_alpha_sample.mov" : "speaker_alpha.mov";
 $("#mRun").onclick = () => runMatte(null);
-$("#mRunSample").onclick = () => runMatte(30);
+$("#mRunSample").onclick = () => runMatte(15);
 $("#mCancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
 $("#mOpen").onclick = () => api().open_file("_matte", matteFile());
 $("#mReveal").onclick = () => api().reveal("_matte", matteFile());
