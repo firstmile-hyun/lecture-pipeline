@@ -32,11 +32,15 @@ def main() -> None:
     ap.add_argument("--mask", required=True, help="첫 프레임 마스크 PNG (크롭 해상도)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--crop-frac", type=float, default=0.45)
-    ap.add_argument("--side", default="right", choices=["right", "left"])
+    ap.add_argument("--side", default="right", choices=["right", "left", "center"])
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--erode", type=int, default=10)
     ap.add_argument("--dilate", type=int, default=10)
     ap.add_argument("--sample-sec", type=float, default=None)
+    ap.add_argument("--start-frame", type=int, default=None, help="처리 시작 프레임 (청크)")
+    ap.add_argument("--end-frame", type=int, default=None, help="처리 끝 프레임(미포함, 청크)")
+    ap.add_argument("--lead-frames", type=int, default=0,
+                    help="시작 전 실프레임 리드인(출력 제외) — 청크 경계 알파 연속성용")
     a = ap.parse_args()
 
     device = get_default_device()
@@ -49,14 +53,34 @@ def main() -> None:
     W0 = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if a.sample_sec:
-        n = min(n, round(fps * a.sample_sec))
+    total_src = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # matte.py의 RVM 마스크 생성과 동일한 크롭 (짝수 폭)
+    # 처리 구간 [start, end) — 청크 처리용. 미지정 시 전체(+sample-sec 제한).
+    start = a.start_frame or 0
+    end = a.end_frame if a.end_frame is not None else total_src
+    end = min(end, total_src)
+    if a.sample_sec:
+        end = min(end, start + round(fps * a.sample_sec))
+    n = end - start
+    if n <= 0:
+        sys.exit(f"[matte] 처리 구간이 비어 있음 (start={start}, end={end})")
+    # 리드인: 청크 시작 전 실제 프레임을 추적만 하고 출력하지 않는다 —
+    # 첫 프레임 반복 예열만으로는 이전 청크가 이어온 메모리 상태와 다르게 수렴해
+    # 경계에서 알파가 튀는 것을 완화 (마스크도 리드인 시작 프레임 기준).
+    lead = min(max(0, a.lead_frames), start)
+    seek_to = start - lead
+    if seek_to > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, seek_to)
+
+    # matte.py의 RVM 마스크 생성과 동일한 크롭 (짝수 폭 · 짝수 오프셋)
     cw = int(W0 * a.crop_frac) // 2 * 2
-    x0 = W0 - cw if a.side == "right" else 0
-    print(f"[matte] 크롭 {cw}x{H} (x0={x0}), {n}프레임, fps={fps:.3f}", flush=True)
+    if a.side == "right":
+        x0 = W0 - cw
+    elif a.side == "center":
+        x0 = (W0 - cw) // 2 // 2 * 2
+    else:
+        x0 = 0
+    print(f"[matte] 크롭 {cw}x{H} (x0={x0}), 프레임 {start}–{end} ({n}f), fps={fps:.3f}", flush=True)
 
     mask = np.array(Image.open(a.mask).convert("L"))
     if a.dilate > 0:
@@ -80,11 +104,14 @@ def main() -> None:
         sys.exit("[matte] 소스 첫 프레임 읽기 실패")
     f0 = f0[:, x0:x0 + cw]
 
-    total = a.warmup + n   # 앞 warmup개는 첫 프레임 반복(예열), 출력 안 함
+    # 반복 순서: [0..warmup) 첫 프레임 반복 예열 → [warmup..warmup+lead) 리드인 실프레임
+    # (추적만) → [warmup+lead..total) 본 구간 출력. lead=0이면 기존과 동일.
+    out_from = a.warmup + lead
+    total = a.warmup + lead + n
     written = 0
     with torch.inference_mode():
         for ti in tqdm(range(total), desc="matte(MatAnyone2)", unit="f"):
-            if ti <= a.warmup:            # 0..warmup: 첫 프레임 (ti==warmup이 첫 실제 출력)
+            if ti <= a.warmup:            # 0..warmup: 리드인 시작 프레임 반복
                 bgr = f0
             else:
                 ok, fr = cap.read()
@@ -103,7 +130,7 @@ def main() -> None:
                 prob = processor.step(img)
 
             pha = processor.output_prob_to_mask(prob).cpu().numpy()   # HxW 0..1
-            if ti >= a.warmup:
+            if ti >= out_from:
                 al = np.clip(pha * 255, 0, 255).astype(np.uint8)[..., None]
                 rgba = np.concatenate([rgb, al], axis=2)
                 ff.stdin.write(np.ascontiguousarray(rgba).tobytes())

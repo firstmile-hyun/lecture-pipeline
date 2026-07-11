@@ -82,6 +82,14 @@ class Api:
         )
         return r[0] if r else None
 
+    def pick_videos(self):
+        """여러 영상 선택 (전환 마커 배치용)."""
+        r = self.window.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=True,
+            file_types=("동영상 (*.mp4;*.mov;*.m4v)", "모든 파일 (*.*)"),
+        )
+        return list(r) if r else []
+
     # ------------------------------------------------------------ 에피소드
 
     def list_episodes(self):
@@ -184,6 +192,83 @@ class Api:
             threading.Thread(target=self._stream, args=(proc,), daemon=True).start()
         return {"ok": True}
 
+    # ------------------------------------------------------------ 전환 마커
+    #
+    # PPT 전환(즉시 컷) 프레임을 감지해 프리미어 마커 XML을 만든다.
+    # 산출물은 각 원본 옆: <name>_markers.xml / <name>_markers.csv / (VFR이면) <name>_cfr.mp4
+
+    def run_markers(self, videos: list, full_frame: bool, side: str, threshold):
+        if not videos:
+            return {"error": "영상을 먼저 선택해 주세요"}
+        for v in videos:
+            p = Path(v)
+            if not p.is_file():
+                return {"error": f"영상 파일을 찾을 수 없어요: {v}"}
+            if p.suffix.lower() not in (".mp4", ".mov", ".m4v"):
+                return {"error": f"영상 파일이 아니에요: {p.name}"}
+        if side not in ("right", "left"):
+            return {"error": "강연자 위치 값이 올바르지 않아요"}
+        try:
+            th = float(threshold)
+        except (TypeError, ValueError):
+            return {"error": "감지 민감도가 숫자가 아니에요"}
+        if not 0.5 <= th <= 100:
+            return {"error": "감지 민감도는 0.5~100 사이여야 해요"}
+
+        with self._lock:
+            if self.proc and self.proc.poll() is None:
+                return {"error": "이미 실행 중이에요"}
+            cmd = [str(PY), "-u", "-m", "pipeline.markers", *videos, "--threshold", str(th)]
+            if full_frame:
+                cmd += ["--full-frame"]
+            else:
+                cmd += ["--side", side]
+            proc = subprocess.Popen(
+                cmd, cwd=ROOT,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                start_new_session=True,
+            )
+            self.proc = proc
+            threading.Thread(target=self._stream, args=(proc,), daemon=True).start()
+        return {"ok": True}
+
+    def markers_results(self, videos: list):
+        """실행 후 결과 요약 — 영상별 전환 수·산출물 경로."""
+        out = []
+        for v in videos:
+            src = Path(v)
+            csv_p = src.parent / f"{src.stem}_markers.csv"
+            xml_p = src.parent / f"{src.stem}_markers.xml"
+            cfr_p = src.parent / f"{src.stem}_cfr.mp4"
+            count = None
+            if csv_p.exists():
+                with open(csv_p, encoding="utf-8") as f:
+                    count = max(0, sum(1 for _ in f) - 1)  # 헤더 제외
+            out.append({
+                "video": src.name,
+                "count": count,
+                "xml": str(xml_p) if xml_p.exists() else None,
+                "cfr": str(cfr_p) if cfr_p.exists() else None,
+            })
+        return out
+
+    def marker_rows(self, video: str):
+        """검수용 — 해당 영상의 마커 CSV 행."""
+        src = Path(video)
+        csv_p = src.parent / f"{src.stem}_markers.csv"
+        if not csv_p.exists():
+            return []
+        with open(csv_p, encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+
+    def reveal_path(self, path: str):
+        p = Path(path)
+        if not p.exists():
+            return {"error": "파일이 없어요"}
+        subprocess.run(["open", "-R", str(p)])
+        return {"ok": True}
+
     # ------------------------------------------------------------ 누끼 전용
     #
     # 통합 파이프라인과 무관하게 영상 하나만 매팅한다. 임의의 영상을 예약 작업
@@ -197,7 +282,7 @@ class Api:
             return {"error": f"영상 파일을 찾을 수 없어요: {video}"}
         if vp.suffix.lower() not in (".mp4", ".mov", ".m4v"):
             return {"error": f"영상 파일이 아니에요: {vp.name}"}
-        if side not in ("right", "left"):
+        if side not in ("right", "left", "center"):
             return {"error": "강연자 위치 값이 올바르지 않아요"}
         if model not in ("matanyone2", "mobilenetv3", "resnet50"):
             return {"error": "모델 값이 올바르지 않아요"}

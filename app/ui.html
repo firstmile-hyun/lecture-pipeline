@@ -144,6 +144,7 @@
   <h1>강의 파이프라인</h1>
   <nav id="nav">
     <button id="navMain" class="navbtn active">통합 파이프라인</button>
+    <button id="navMarkers" class="navbtn">전환 마커</button>
     <button id="navMatte" class="navbtn">누끼 전용</button>
   </nav>
 </header>
@@ -197,6 +198,46 @@
   </div>
   </div><!-- /mainView -->
 
+  <div id="markersView" class="hidden" style="flex:1;padding:22px;overflow-y:auto">
+    <div class="matte-wrap">
+      <div class="mv-title">전환 마커 — PPT 전환 프레임을 프리미어 마커로</div>
+      <p class="mv-sub">여러 영상을 한 번에 처리합니다. 영상별로 원본 옆에 <b>_markers.xml</b>(프리미어 임포트)과 <b>_markers.csv</b>(검수)가 생겨요. 화면 녹화(VFR)는 자동으로 CFR 사본을 만들어 프레임 오차를 없앱니다.</p>
+
+      <div class="card">
+        <h2>영상 (여러 개 선택 가능)</h2>
+        <div class="filerow" id="mkPickVideos"><span>🎬</span><span class="name">영상 선택…</span></div>
+        <div id="mkList" style="font-size:12px;color:var(--dim);max-height:120px;overflow-y:auto"></div>
+        <div class="opts">
+          <label>분석 영역
+            <select id="mkMode">
+              <option value="full">전체 프레임 (화면 녹화·신규 3편)</option>
+              <option value="right">강연자 오른쪽 제외 (기존 13편)</option>
+              <option value="left">강연자 왼쪽 제외</option>
+            </select>
+          </label>
+          <label>감지 민감도 (낮을수록 민감)
+            <input type="number" id="mkThreshold" min="0.5" max="100" step="0.5" value="4">
+          </label>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button id="mkRun" disabled>▶ 마커 생성</button>
+        <button id="mkCancel" class="danger hidden">■ 중단</button>
+        <div class="spacer"></div>
+      </div>
+
+      <div id="markersLog" style="background:#0d1116;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-y:auto;font:12px/1.7 'SF Mono',Menlo,monospace;color:#b7c2cf;white-space:pre-wrap;user-select:text;height:200px">영상을 선택하고 실행을 누르면 진행 로그가 여기 표시됩니다.</div>
+
+      <div id="mkResults" class="hidden" style="border:1px solid var(--line);border-radius:10px;background:var(--panel);max-height:220px;overflow-y:auto">
+        <table>
+          <thead><tr><th>영상</th><th>전환 수</th><th>XML</th><th>CFR 사본</th></tr></thead>
+          <tbody id="mkResultBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div id="matteView" class="hidden">
     <div class="matte-wrap">
       <div class="mv-title">누끼 전용 — 강연자 알파 영상 추출</div>
@@ -208,6 +249,7 @@
         <div class="opts">
           <label>강연자 위치
             <select id="mSide">
+              <option value="center">중앙 (신규 촬영본)</option>
               <option value="right">오른쪽</option>
               <option value="left">왼쪽</option>
             </select>
@@ -240,9 +282,13 @@
 <script>
 const $ = s => document.querySelector(s);
 let state = { video: null, pdf: null, current: null, running: false, episodes: [],
-              matteVideo: null, matteSample: false, runKind: "main" };
+              matteVideo: null, matteSample: false, runKind: "main", markerVideos: [] };
 let activeView = "main";
-function curLog() { return activeView === "matte" ? $("#matteLog") : $("#log"); }
+function curLog() {
+  if (activeView === "matte") return $("#matteLog");
+  if (activeView === "markers") return $("#markersLog");
+  return $("#log");
+}
 
 function toast(msg, ms = 2600) {
   const t = $("#toast"); t.textContent = msg; t.style.opacity = 1;
@@ -278,6 +324,9 @@ window.pipelineEvent = ev => {
     if (state.runKind === "matte") {
       updateMatteButtons();
       if (ok) for (const id of ["mOpen", "mReveal", "mExport"]) $("#" + id).disabled = false;
+    } else if (state.runKind === "markers") {
+      updateMarkerButtons();
+      renderMarkerResults();
     } else {
       updateRunButtons();
       refreshEpisodes().then(() => state.current && selectEpisode(state.current, true));
@@ -364,6 +413,69 @@ $("#runSample").onclick = () => run("matte", 30);
 $("#runXml").onclick = () => run("xml", null);
 $("#cancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
 
+/* ---------------- 전환 마커 뷰 ---------------- */
+function updateMarkerButtons() {
+  $("#mkRun").disabled = state.running || !state.markerVideos.length;
+  $("#mkCancel").classList.toggle("hidden", !state.running);
+}
+function renderMarkerList() {
+  const el = $("#mkList");
+  el.innerHTML = "";
+  for (const v of state.markerVideos) {
+    const d = document.createElement("div");
+    d.textContent = "· " + v.split("/").pop();
+    el.appendChild(d);
+  }
+  $("#mkPickVideos .name").textContent = state.markerVideos.length
+    ? `${state.markerVideos.length}개 선택됨` : "영상 선택…";
+  $("#mkPickVideos").classList.toggle("set", !!state.markerVideos.length);
+}
+$("#mkPickVideos").onclick = async () => {
+  if (state.running) return;
+  const r = await api().pick_videos();
+  if (!r || !r.length) return;
+  state.markerVideos = r;
+  renderMarkerList();
+  $("#mkResults").classList.add("hidden");
+  updateMarkerButtons();
+};
+$("#mkRun").onclick = async () => {
+  if (!state.markerVideos.length || state.running) return;
+  const mode = $("#mkMode").value;
+  const r = await api().run_markers(
+    state.markerVideos, mode === "full",
+    mode === "full" ? "right" : mode, parseFloat($("#mkThreshold").value));
+  if (r.error) return toast(r.error, 4200);
+  state.running = true; state.runKind = "markers"; progEl = null;
+  $("#mkResults").classList.add("hidden");
+  appendLog(`▶ 마커 생성: 영상 ${state.markerVideos.length}개`);
+  updateMarkerButtons();
+};
+$("#mkCancel").onclick = async () => { await api().cancel(); toast("중단 요청됨"); };
+async function renderMarkerResults() {
+  const rows = await api().markers_results(state.markerVideos);
+  const tb = $("#mkResultBody"); tb.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const tdName = document.createElement("td"); tdName.textContent = r.video;
+    const tdCount = document.createElement("td");
+    tdCount.textContent = r.count === null ? "실패" : `${r.count}개`;
+    const tdXml = document.createElement("td");
+    if (r.xml) {
+      const btn = document.createElement("button");
+      btn.className = "ghost"; btn.textContent = "Finder";
+      btn.style.padding = "3px 10px"; btn.style.fontSize = "11px";
+      btn.onclick = () => api().reveal_path(r.xml);
+      tdXml.appendChild(btn);
+    } else tdXml.textContent = "—";
+    const tdCfr = document.createElement("td");
+    tdCfr.textContent = r.cfr ? "생성됨 (프리미어에선 이 파일 사용)" : "불필요";
+    tr.append(tdName, tdCount, tdXml, tdCfr);
+    tb.appendChild(tr);
+  }
+  $("#mkResults").classList.toggle("hidden", !rows.length);
+}
+
 /* ---------------- 누끼 전용 뷰 ---------------- */
 function updateMatteButtons() {
   $("#mRun").disabled = state.running || !state.matteVideo;
@@ -408,11 +520,14 @@ function showView(v) {
   if (state.running) return toast("실행 중에는 화면을 전환할 수 없어요");
   activeView = v;
   $("#mainView").classList.toggle("hidden", v !== "main");
+  $("#markersView").classList.toggle("hidden", v !== "markers");
   $("#matteView").classList.toggle("hidden", v !== "matte");
   $("#navMain").classList.toggle("active", v === "main");
+  $("#navMarkers").classList.toggle("active", v === "markers");
   $("#navMatte").classList.toggle("active", v === "matte");
 }
 $("#navMain").onclick = () => showView("main");
+$("#navMarkers").onclick = () => showView("markers");
 $("#navMatte").onclick = () => showView("matte");
 
 /* ---------------- 새 에피소드 ---------------- */

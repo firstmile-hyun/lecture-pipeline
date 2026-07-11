@@ -29,6 +29,9 @@ match:                       # Phase 3 — 대표 프레임 ↔ 슬라이드 매
 matte:                       # Phase 4 — 강연자 누끼
   model: matanyone2          # matanyone2 | mobilenetv3 | resnet50
   crop_frac: 0.45            # 강연자 쪽에서 이 비율만큼 크롭해 매팅 (속도/품질)
+  chunk_sec: 300             # 이 길이(초) 단위로 청크 처리 + 이어하기 (긴 영상 크래시 대비).
+                             # 청크 완료본은 output/matte_chunks/에 남고 재실행 시 자동 스킵
+  chunk_lead_frames: 30      # 청크 시작 전 실프레임 리드인(추적만, 출력 제외) — 경계 알파 연속성
   # --- MatAnyone2 전용 (model: matanyone2) ---
   mat2_python: .venv-matanyone2/bin/python  # 별도 3.10 환경 인터프리터 (프로젝트 루트 기준)
   warmup: 10                 # 첫 프레임 예열 반복 (알파 안정화)
